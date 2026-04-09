@@ -235,9 +235,11 @@ def _resolve_file(index: ProjectIndex, file_path: str) -> StructuralMetadata | N
     """Resolve a file path to its StructuralMetadata, trying exact and relative matches."""
     if file_path in index.files:
         return index.files[file_path]
-    # Try matching against the end of stored paths
+    # Normalize separators to forward slashes for comparison
+    normalized = file_path.replace("\\", "/")
     for stored_path, meta in index.files.items():
-        if stored_path.endswith(file_path) or file_path.endswith(stored_path):
+        stored_normalized = stored_path.replace("\\", "/")
+        if stored_normalized.endswith(normalized) or normalized.endswith(stored_normalized):
             return meta
     return None
 

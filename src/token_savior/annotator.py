@@ -15,6 +15,7 @@ from token_savior.rust_annotator import annotate_rust
 from token_savior.text_annotator import annotate_text
 from token_savior.toml_annotator import annotate_toml
 from token_savior.typescript_annotator import annotate_typescript
+from token_savior.typst_annotator import annotate_typst
 from token_savior.xml_annotator import annotate_xml
 from token_savior.yaml_annotator import annotate_yaml
 
@@ -46,6 +47,8 @@ _EXTENSION_MAP: dict[str, str] = {
     ".hcl": "hcl",
     ".tf": "hcl",
     ".conf": "conf",
+    ".typ": "typst",
+    ".typst": "typst",
 }
 
 
@@ -114,5 +117,7 @@ def annotate(
         return annotate_conf(text, source_name)
     elif file_type == "dockerfile":
         return annotate_dockerfile(text, source_name)
+    elif file_type == "typst":
+        return annotate_typst(text, source_name)
     else:
         return annotate_generic(text, source_name)
