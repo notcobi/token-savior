@@ -34,30 +34,52 @@ class GitStatus:
     clean: bool = True
 
 
+def _git_env() -> dict:
+    """Environment for git subprocesses — disables credential prompts that can hang.
+
+    VS Code injects GIT_ASKPASS pointing to a shell script that connects back to
+    VS Code's IPC pipe. When git subprocesses inherit this and the pipe is not
+    accessible (e.g. from a spawned MCP server), git hangs until timeout.
+    Remove all VS Code git integration vars and disable terminal prompts.
+    """
+    import os
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    for var in ("GIT_ASKPASS", "SSH_ASKPASS", "VSCODE_GIT_IPC_HANDLE",
+                "VSCODE_GIT_ASKPASS_NODE", "VSCODE_GIT_ASKPASS_MAIN",
+                "VSCODE_GIT_ASKPASS_EXTRA_ARGS"):
+        env.pop(var, None)
+    return env
+
+
+# Extra git flags to disable credential helpers configured in .gitconfig
+_GIT_NO_CRED = ["-c", "credential.helper=", "-c", "core.askPass="]
+
+
 def is_git_repo(root_path: str) -> bool:
-    """Check if the given path is inside a git work tree."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=root_path,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        return result.returncode == 0 and result.stdout.strip() == "true"
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+    """Check if the given path is inside a git work tree (filesystem check, no subprocess)."""
+    import os
+    path = root_path
+    while True:
+        if os.path.isdir(os.path.join(path, ".git")):
+            return True
+        parent = os.path.dirname(path)
+        if parent == path:
+            return False
+        path = parent
 
 
 def get_head_commit(root_path: str) -> str | None:
     """Get the current HEAD commit hash."""
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", *_GIT_NO_CRED, "rev-parse", "HEAD"],
             cwd=root_path,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=10,
+            env=_git_env(),
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -70,11 +92,13 @@ def get_git_status(root_path: str) -> dict:
     """Return a structured status summary for the git work tree."""
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain=1", "--branch"],
+            ["git", *_GIT_NO_CRED, "status", "--porcelain=1", "--branch"],
             cwd=root_path,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=10,
+            env=_git_env(),
         )
         if result.returncode != 0:
             return {"ok": False, "error": result.stderr.strip() or "git status failed"}
@@ -110,25 +134,27 @@ def get_changed_files(root_path: str, since_ref: str | None) -> GitChangeSet:
     deleted: set[str] = set()
 
     # 1. Committed changes since the ref
-    _parse_diff_output(root_path, ["git", "diff", "--name-status", since_ref, "HEAD"],
+    _parse_diff_output(root_path, ["git", *_GIT_NO_CRED, "diff", "--name-status", since_ref, "HEAD"],
                        modified, added, deleted)
 
     # 2. Unstaged changes
-    _parse_diff_output(root_path, ["git", "diff", "--name-status"],
+    _parse_diff_output(root_path, ["git", *_GIT_NO_CRED, "diff", "--name-status"],
                        modified, added, deleted)
 
     # 3. Staged changes
-    _parse_diff_output(root_path, ["git", "diff", "--name-status", "--cached"],
+    _parse_diff_output(root_path, ["git", *_GIT_NO_CRED, "diff", "--name-status", "--cached"],
                        modified, added, deleted)
 
     # 4. Untracked files
     try:
         result = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
+            ["git", *_GIT_NO_CRED, "ls-files", "--others", "--exclude-standard"],
             cwd=root_path,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=10,
+            env=_git_env(),
         )
         if result.returncode == 0:
             for line in result.stdout.strip().splitlines():
@@ -163,9 +189,11 @@ def _parse_diff_output(
         result = subprocess.run(
             cmd,
             cwd=root_path,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=10,
+            env=_git_env(),
         )
         if result.returncode != 0:
             return

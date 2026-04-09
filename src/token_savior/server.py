@@ -2317,6 +2317,9 @@ async def main():
 def main_sync():
     """Synchronous entry point for console_scripts."""
     import asyncio
+    import sys
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     asyncio.run(main())
 
 
