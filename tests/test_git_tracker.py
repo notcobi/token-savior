@@ -1,5 +1,7 @@
 """Unit tests for git_tracker module."""
 
+import os
+import tempfile
 from unittest.mock import patch, MagicMock
 import subprocess
 
@@ -14,24 +16,32 @@ from token_savior.git_tracker import (
 
 class TestIsGitRepo:
     def test_returns_true_for_git_repo(self):
-        with patch("token_savior.git_tracker.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="true\n")
-            assert is_git_repo("/some/path") is True
+        # is_git_repo uses filesystem check (.git directory), not subprocess
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.makedirs(os.path.join(tmpdir, ".git"))
+            assert is_git_repo(tmpdir) is True
 
     def test_returns_false_for_non_git(self):
-        with patch("token_savior.git_tracker.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=128, stdout="")
-            assert is_git_repo("/some/path") is False
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assert is_git_repo(tmpdir) is False
 
     def test_returns_false_when_git_not_installed(self):
-        with patch("token_savior.git_tracker.subprocess.run") as mock_run:
-            mock_run.side_effect = FileNotFoundError
-            assert is_git_repo("/some/path") is False
+        # Filesystem check never calls subprocess, so always returns False for non-git dirs
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assert is_git_repo(tmpdir) is False
 
     def test_returns_false_on_timeout(self):
-        with patch("token_savior.git_tracker.subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=10)
-            assert is_git_repo("/some/path") is False
+        # Filesystem check never times out; non-git dir returns False
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assert is_git_repo(tmpdir) is False
+
+    def test_finds_git_in_parent(self):
+        # Should walk up to parent containing .git
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.makedirs(os.path.join(tmpdir, ".git"))
+            subdir = os.path.join(tmpdir, "src", "pkg")
+            os.makedirs(subdir)
+            assert is_git_repo(subdir) is True
 
 
 class TestGetHeadCommit:
@@ -56,10 +66,33 @@ class TestGetChangedFiles:
         changeset = get_changed_files("/some/path", None)
         assert changeset.is_empty
 
+    def _strip_config_flags(self, cmd):
+        """Remove -c <value> pairs from a git command list."""
+        result = []
+        skip_next = False
+        for arg in cmd:
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == "-c":
+                skip_next = True
+                continue
+            result.append(arg)
+        return result
+
+    def _is_committed_diff(self, cmd):
+        """git diff --name-status <ref> HEAD  (with _GIT_NO_CRED flags interspersed)."""
+        return self._strip_config_flags(cmd) == ["git", "diff", "--name-status", "abc123", "HEAD"]
+
+    def _is_unstaged_diff(self, cmd):
+        return self._strip_config_flags(cmd) == ["git", "diff", "--name-status"]
+
+    def _is_ls_files(self, cmd):
+        return "ls-files" in cmd
+
     def test_parses_modified_files(self):
         def mock_run(cmd, **kwargs):
-            if cmd[:3] == ["git", "diff", "--name-status"] and len(cmd) == 5:
-                # committed changes: git diff --name-status <ref> HEAD
+            if self._is_committed_diff(cmd):
                 return MagicMock(returncode=0, stdout="M\tfoo.py\n")
             return MagicMock(returncode=0, stdout="")
 
@@ -69,7 +102,7 @@ class TestGetChangedFiles:
 
     def test_parses_added_files(self):
         def mock_run(cmd, **kwargs):
-            if cmd[:3] == ["git", "diff", "--name-status"] and len(cmd) == 5:
+            if self._is_committed_diff(cmd):
                 return MagicMock(returncode=0, stdout="A\tnew_file.py\n")
             return MagicMock(returncode=0, stdout="")
 
@@ -79,7 +112,7 @@ class TestGetChangedFiles:
 
     def test_parses_deleted_files(self):
         def mock_run(cmd, **kwargs):
-            if cmd[:3] == ["git", "diff", "--name-status"] and len(cmd) == 5:
+            if self._is_committed_diff(cmd):
                 return MagicMock(returncode=0, stdout="D\told_file.py\n")
             return MagicMock(returncode=0, stdout="")
 
@@ -89,7 +122,7 @@ class TestGetChangedFiles:
 
     def test_rename_handling(self):
         def mock_run(cmd, **kwargs):
-            if cmd[:3] == ["git", "diff", "--name-status"] and len(cmd) == 5:
+            if self._is_committed_diff(cmd):
                 return MagicMock(returncode=0, stdout="R100\told.py\tnew.py\n")
             return MagicMock(returncode=0, stdout="")
 
@@ -102,11 +135,9 @@ class TestGetChangedFiles:
         """If a file appears in both added and deleted, treat as modified."""
 
         def mock_run(cmd, **kwargs):
-            if cmd[:3] == ["git", "diff", "--name-status"] and len(cmd) == 5:
-                # Committed: file was deleted
+            if self._is_committed_diff(cmd):
                 return MagicMock(returncode=0, stdout="D\toverlap.py\n")
-            if cmd == ["git", "diff", "--name-status"]:
-                # Unstaged: file was added
+            if self._is_unstaged_diff(cmd):
                 return MagicMock(returncode=0, stdout="A\toverlap.py\n")
             return MagicMock(returncode=0, stdout="")
 
@@ -118,7 +149,7 @@ class TestGetChangedFiles:
 
     def test_untracked_files_added(self):
         def mock_run(cmd, **kwargs):
-            if cmd[:2] == ["git", "ls-files"]:
+            if self._is_ls_files(cmd):
                 return MagicMock(returncode=0, stdout="untracked.py\n")
             return MagicMock(returncode=0, stdout="")
 
